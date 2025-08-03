@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Production
+client/build/
+dist/
+.vercel
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.*.local
+client/.env
+server/.env
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+coverage/
+.nyc_output/
+
+# Misc
+.cache/
+.parcel-cache/
+.next/
+out/
+.nuxt/
+dist/
+
+# Lock files (optional - some prefer to commit these)
+# package-lock.json
+# yarn.lock
