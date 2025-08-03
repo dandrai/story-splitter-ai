@@ -105,7 +105,8 @@ const usePusherCollaboration = () => {
   const subscribeToStory = useCallback((storyId, callback) => {
     if (!pusher) return () => {};
 
-    const channelName = `story-${storyId}`;
+    // Use private channel for story updates (to support client events)
+    const channelName = `private-story-${storyId}`;
     let channel = channelsRef.current.get(channelName);
     
     if (!channel) {
@@ -151,7 +152,7 @@ const usePusherCollaboration = () => {
   const sendTypingIndicator = useCallback((storyId, isTyping) => {
     if (!pusher || !isConnected) return;
 
-    const channel = channelsRef.current.get(`story-${storyId}`);
+    const channel = channelsRef.current.get(`private-story-${storyId}`);
     if (!channel) return;
 
     // Use client events for typing indicators

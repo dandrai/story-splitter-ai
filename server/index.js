@@ -1,5 +1,6 @@
 // server/index.js - Node.js/Express backend with Pusher support
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const express = require('express');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -60,8 +61,16 @@ initializeData();
 
 // Pusher authentication endpoint
 app.post('/api/pusher/auth', (req, res) => {
+  console.log('Pusher auth request:', req.body); // Debug log
+  
   const socketId = req.body.socket_id;
   const channel = req.body.channel_name;
+  
+  // Validate required fields
+  if (!socketId || !channel) {
+    console.log('Missing data:', { socketId, channel }); // Debug log
+    return res.status(400).json({ error: 'Missing socket_id or channel_name' });
+  }
   
   // For presence channels, add user info
   if (channel.startsWith('presence-')) {
@@ -136,7 +145,7 @@ app.put('/api/stories/:id', async (req, res) => {
     stories.set(req.params.id, updatedStory);
     
     // Trigger Pusher event
-    await pusher.trigger(`story-${req.params.id}`, 'story-updated', {
+    await pusher.trigger(`private-story-${req.params.id}`, 'story-updated', {
       storyId: req.params.id,
       changes: req.body,
       userId: req.body.userId || 'api',
@@ -151,6 +160,23 @@ app.put('/api/stories/:id', async (req, res) => {
 
 app.post('/api/stories/:id/publish', async (req, res) => {
   try {
+    // Handle special case for main story editor
+    if (req.params.id === 'main-story') {
+      // For now, just return success without storing
+      await pusher.trigger(`private-story-main-story`, 'story-published', {
+        storyId: 'main-story',
+        userId: req.body.userId || 'api',
+        timestamp: new Date().toISOString()
+      });
+      
+      return res.json({
+        id: 'main-story',
+        content: req.body.content,
+        status: 'published',
+        lastModified: new Date().toISOString()
+      });
+    }
+    
     const story = stories.get(req.params.id);
     if (!story) {
       return res.status(404).json({ error: 'Story not found' });
@@ -165,7 +191,7 @@ app.post('/api/stories/:id/publish', async (req, res) => {
     stories.set(req.params.id, publishedStory);
     
     // Trigger Pusher event
-    await pusher.trigger(`story-${req.params.id}`, 'story-published', {
+    await pusher.trigger(`private-story-${req.params.id}`, 'story-published', {
       storyId: req.params.id,
       userId: req.body.userId || 'api',
       timestamp: new Date().toISOString()

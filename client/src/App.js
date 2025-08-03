@@ -1,6 +1,6 @@
 // client/src/App.js
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Send, Sparkles, FileText, Users, CheckCircle, Split, RefreshCw, Download, Upload, Zap, Plus, Trash2, Edit3, Move, GripVertical, Layout, Grid3x3, Globe, Eye, Loader2, AlertCircle, Wifi, WifiOff } from 'lucide-react';
+import { Send, Sparkles, FileText, Users, CheckCircle, Split, RefreshCw, Download, Upload, Zap, Plus, Trash2, Edit3, Move, GripVertical, Layout, LayoutGrid, Globe, Eye, Loader2, AlertCircle, Wifi, WifiOff } from 'lucide-react';
 import usePusherCollaboration from './hooks/usePusherCollaboration';
 
 // API Configuration
@@ -1225,7 +1225,7 @@ const StoryEditorApp = () => {
             : 'text-gray-600 hover:text-gray-900'
         }`}
       >
-        <Grid3x3 size={14} />
+        <LayoutGrid size={14} />
         Board
       </button>
     </div>
