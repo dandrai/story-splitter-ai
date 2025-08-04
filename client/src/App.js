@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Send, Sparkles, FileText, Users, CheckCircle, Split, RefreshCw, Download, Upload, Zap, Plus, Trash2, Edit3, Move, GripVertical, Layout, Grid3X3, Globe, Eye, Loader2, AlertCircle, Wifi, WifiOff, ChevronDown } from 'lucide-react';
+import { Send, Sparkles, FileText, Users, CheckCircle, Split, RefreshCw, Download, Upload, Zap, Plus, Trash2, Edit3, Move, GripVertical, Layout, LayoutGrid, Globe, Eye, Loader2, AlertCircle, Wifi, WifiOff } from 'lucide-react';
+import Pusher from 'pusher-js';
 import './App.css';
 
 // Context for managing global application state
 const StoryContext = React.createContext();
 
-// API Service for backend communication - Updated with Phase 1 methods
+// API Service for backend communication
 class APIService {
   constructor(baseURL = '/api') {
-    this.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
-    console.log('APIService initialized with baseURL:', this.baseURL);
+    this.baseURL = baseURL;
   }
 
   async request(endpoint, options = {}) {
@@ -26,29 +26,26 @@ class APIService {
       config.body = JSON.stringify(config.body);
     }
 
-    let retries = 3;
-    while (retries > 0) {
-      try {
-        const response = await fetch(url, config);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        return await response.json();
-      } catch (error) {
-        retries--;
-        if (retries === 0) {
-          throw new Error(`API request failed: ${error.message}`);
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries)));
-      }
+    const response = await fetch(url, config);
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || `HTTP ${response.status}: ${response.statusText}`);
     }
+    
+    return await response.json();
   }
 
   // Story management
   async getStory(id) {
     return this.request(`/stories/${id}`);
+  }
+
+  async createStory(story) {
+    return this.request('/stories', {
+      method: 'POST',
+      body: story,
+    });
   }
 
   async updateStory(id, story) {
@@ -64,19 +61,6 @@ class APIService {
     });
   }
 
-  async createStory(story) {
-    return this.request('/stories', {
-      method: 'POST',
-      body: story
-    });
-  }
-
-  async deleteStory(id) {
-    return this.request(`/stories/${id}`, {
-      method: 'DELETE'
-    });
-  }
-
   // AI Agent calls
   async callAgent(agentType, storyData) {
     return this.request(`/agents/${agentType}`, {
@@ -84,302 +68,146 @@ class APIService {
       body: storyData,
     });
   }
-
-  // Epic management
-  async getAllEpics() {
-    return this.request('/epics');
-  }
-
-  async createEpic(epic) {
-    return this.request('/epics', {
-      method: 'POST',
-      body: epic
-    });
-  }
-
-  async updateEpic(id, epic) {
-    return this.request(`/epics/${id}`, {
-      method: 'PUT',
-      body: epic
-    });
-  }
-
-  async deleteEpic(id) {
-    return this.request(`/epics/${id}`, {
-      method: 'DELETE'
-    });
-  }
-
-  // Phase 1: New methods for story hierarchy
-  async getMainStories() {
-    return this.request('/stories?main=true');
-  }
-
-  async getSubStories(parentId) {
-    return this.request(`/stories/${parentId}/substories`);
-  }
-
-  async acceptSplitSuggestions(parentId, splits) {
-    return this.request(`/stories/${parentId}/accept-splits`, {
-      method: 'POST',
-      body: { splits }
-    });
-  }
-
-  async getStories(filters = {}) {
-    const queryParams = new URLSearchParams();
-    if (filters.main) queryParams.append('main', 'true');
-    if (filters.parentId) queryParams.append('parentId', filters.parentId);
-    
-    const queryString = queryParams.toString();
-    return this.request(`/stories${queryString ? `?${queryString}` : ''}`);
-  }
 }
 
-// Pusher collaboration hook
-const usePusherCollaboration = (channelName, options = {}) => {
+// Pusher-based real-time collaboration
+const usePusherCollaboration = (channelName) => {
+  const [pusher, setPusher] = useState(null);
   const [channel, setChannel] = useState(null);
-  const [members, setMembers] = useState([]);
-  const [connectionState, setConnectionState] = useState('disconnected');
-  
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectedUsers, setConnectedUsers] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [typingUsers, setTypingUsers] = useState(new Set());
+
   useEffect(() => {
-    // Placeholder for Pusher implementation
-    // In production, this would connect to Pusher
-    console.log('Pusher collaboration initialized for channel:', channelName);
-    setConnectionState('connected');
-    
+    // Initialize Pusher with auth endpoint
+    const pusherClient = new Pusher('c3f5b6a224f131c7e678', {
+      cluster: 'us2',
+      encrypted: true,
+      authEndpoint: '/api/pusher/auth',
+      auth: {
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      }
+    });
+
+    const channelInstance = pusherClient.subscribe(channelName);
+
+    // Connection events
+    pusherClient.connection.bind('connected', () => {
+      setIsConnected(true);
+      console.log('Connected to Pusher');
+    });
+
+    pusherClient.connection.bind('disconnected', () => {
+      setIsConnected(false);
+      console.log('Disconnected from Pusher');
+    });
+
+    // Channel events
+    channelInstance.bind('user-joined', (data) => {
+      setConnectedUsers(prev => [...prev.filter(u => u.id !== data.user.id), data.user]);
+    });
+
+    channelInstance.bind('user-left', (data) => {
+      setConnectedUsers(prev => prev.filter(u => u.id !== data.userId));
+    });
+
+    channelInstance.bind('story-updated', (data) => {
+      window.dispatchEvent(new CustomEvent('collaborative-story-update', {
+        detail: data
+      }));
+    });
+
+    channelInstance.bind('user-typing', (data) => {
+      setTypingUsers(prev => {
+        const newSet = new Set(prev);
+        if (data.isTyping) {
+          newSet.add(`${data.user.id}-${data.storyId}`);
+        } else {
+          newSet.delete(`${data.user.id}-${data.storyId}`);
+        }
+        return newSet;
+      });
+    });
+
+    setPusher(pusherClient);
+    setChannel(channelInstance);
+
+    // Set current user (would come from auth in real app)
+    const user = {
+      id: 'user-' + Math.random().toString(36).substr(2, 9),
+      name: 'You',
+      color: '#3B82F6',
+      avatar: '👤'
+    };
+    setCurrentUser(user);
+
     return () => {
-      console.log('Pusher collaboration cleanup');
-      setConnectionState('disconnected');
+      channelInstance.unbind_all();
+      channelInstance.unsubscribe();
+      pusherClient.disconnect();
     };
   }, [channelName]);
 
-  return {
-    channel,
-    members,
-    connectionState,
-    isConnected: connectionState === 'connected'
-  };
-};
+  const sendStoryUpdate = useCallback(async (storyId, changes) => {
+    if (!channel || !currentUser) return;
 
-// Phase 1: Story Selector Component
-const StorySelector = ({ currentStoryId, onStoryChange }) => {
-  const [stories, setStories] = useState([]);
-  const [isOpen, setIsOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const apiService = new APIService();
-
-  useEffect(() => {
-    loadMainStories();
-  }, []);
-
-  const loadMainStories = async () => {
-    setLoading(true);
     try {
-      const mainStories = await apiService.getMainStories();
-      setStories(mainStories);
+      await fetch('/api/pusher/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: channelName,
+          event: 'story-updated',
+          data: {
+            storyId,
+            changes,
+            user: currentUser,
+            timestamp: Date.now()
+          }
+        })
+      });
     } catch (error) {
-      console.error('Failed to load stories:', error);
-    } finally {
-      setLoading(false);
+      console.error('Failed to send story update:', error);
     }
-  };
+  }, [channel, currentUser, channelName]);
 
-  const currentStory = stories.find(s => s.id === currentStoryId);
+  const sendTypingIndicator = useCallback(async (storyId, isTyping) => {
+    if (!channel || !currentUser) return;
 
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2 min-w-[200px]"
-      >
-        <FileText size={16} />
-        <span className="truncate">
-          {currentStory?.title || 'Select a story'}
-        </span>
-        <ChevronDown size={16} className={`ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-      </button>
-
-      {isOpen && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-64 overflow-y-auto">
-          {loading ? (
-            <div className="p-4 text-center text-gray-500">
-              <Loader2 size={16} className="animate-spin mx-auto" />
-            </div>
-          ) : stories.length === 0 ? (
-            <div className="p-4 text-center text-gray-500">
-              No stories yet
-            </div>
-          ) : (
-            <div className="py-1">
-              {stories.map(story => (
-                <button
-                  key={story.id}
-                  onClick={() => {
-                    onStoryChange(story.id);
-                    setIsOpen(false);
-                  }}
-                  className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 ${
-                    story.id === currentStoryId ? 'bg-blue-50 text-blue-700' : 'text-gray-700'
-                  }`}
-                >
-                  <FileText size={14} />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{story.title}</div>
-                    {story.hasSplits && (
-                      <div className="text-xs text-gray-500">
-                        Has sub-stories
-                      </div>
-                    )}
-                  </div>
-                  {story.status === 'published' && (
-                    <Globe size={12} className="text-blue-500" />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-          
-          <div className="border-t border-gray-200 p-2">
-            <button
-              onClick={() => {
-                // Handle creating new story
-                setIsOpen(false);
-              }}
-              className="w-full px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded flex items-center gap-2"
-            >
-              <Plus size={14} />
-              Create New Story
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Phase 1: Split Acceptance Component
-const SplitAcceptance = ({ splits, parentStoryId, onAccept, onCancel }) => {
-  const [selectedSplits, setSelectedSplits] = useState(
-    splits.map((split, index) => ({ ...split, id: `temp-${index}`, selected: true }))
-  );
-  const [isAccepting, setIsAccepting] = useState(false);
-
-  const handleToggleSplit = (splitId) => {
-    setSelectedSplits(prev =>
-      prev.map(split =>
-        split.id === splitId ? { ...split, selected: !split.selected } : split
-      )
-    );
-  };
-
-  const handleAccept = async () => {
-    const splitsToAccept = selectedSplits.filter(split => split.selected);
-    if (splitsToAccept.length === 0) return;
-
-    setIsAccepting(true);
     try {
-      await onAccept(splitsToAccept);
-    } finally {
-      setIsAccepting(false);
+      await fetch('/api/pusher/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: channelName,
+          event: 'user-typing',
+          data: {
+            storyId,
+            isTyping,
+            user: currentUser
+          }
+        })
+      });
+    } catch (error) {
+      console.error('Failed to send typing indicator:', error);
     }
+  }, [channel, currentUser, channelName]);
+
+  return { 
+    sendStoryUpdate,
+    sendTypingIndicator,
+    isConnected, 
+    connectedUsers,
+    currentUser,
+    typingUsers
   };
-
-  const selectedCount = selectedSplits.filter(s => s.selected).length;
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-4xl w-full max-h-[80vh] overflow-hidden">
-        <div className="p-6 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-800">Accept Split Suggestions</h2>
-          <p className="text-sm text-gray-600 mt-1">
-            Select which sub-stories to create from the AI suggestions
-          </p>
-        </div>
-
-        <div className="p-6 overflow-y-auto max-h-[50vh]">
-          <div className="space-y-4">
-            {selectedSplits.map((split) => (
-              <div
-                key={split.id}
-                className={`border rounded-lg p-4 transition-all ${
-                  split.selected
-                    ? 'border-blue-300 bg-blue-50'
-                    : 'border-gray-200 bg-gray-50'
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    checked={split.selected}
-                    onChange={() => handleToggleSplit(split.id)}
-                    className="mt-1"
-                  />
-                  <div className="flex-1">
-                    <h3 className="font-medium text-gray-800">{split.title}</h3>
-                    {split.description && (
-                      <p className="text-sm text-gray-600 mt-1">{split.description}</p>
-                    )}
-                    <div className="flex gap-4 mt-2 text-xs">
-                      <span className={`px-2 py-1 rounded ${
-                        split.priority === 'High' ? 'bg-red-100 text-red-700' :
-                        split.priority === 'Medium' ? 'bg-yellow-100 text-yellow-700' :
-                        'bg-green-100 text-green-700'
-                      }`}>
-                        {split.priority} Priority
-                      </span>
-                      <span className={`px-2 py-1 rounded ${
-                        split.effort === 'Small' ? 'bg-green-100 text-green-700' :
-                        split.effort === 'Medium' ? 'bg-yellow-100 text-yellow-700' :
-                        'bg-red-100 text-red-700'
-                      }`}>
-                        {split.effort} Effort
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="p-6 border-t border-gray-200 flex items-center justify-between">
-          <span className="text-sm text-gray-600">
-            {selectedCount} of {splits.length} stories selected
-          </span>
-          <div className="flex gap-3">
-            <button
-              onClick={onCancel}
-              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleAccept}
-              disabled={selectedCount === 0 || isAccepting}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {isAccepting ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" />
-                  Creating Stories...
-                </>
-              ) : (
-                <>
-                  <CheckCircle size={14} />
-                  Create {selectedCount} {selectedCount === 1 ? 'Story' : 'Stories'}
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 };
 
 // Story Card Component
-const StoryCard = ({ story, onEdit, onDelete, isDragging, provided, snapshot }) => {
+const StoryCard = ({ story, onEdit, onDelete, isDragging }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(story.title);
 
@@ -418,9 +246,7 @@ const StoryCard = ({ story, onEdit, onDelete, isDragging, provided, snapshot }) 
 
   return (
     <div
-      className={`bg-white border-l-4 rounded-lg shadow-sm transition-all duration-200 ${getPriorityColor(story.priority)} ${
-        snapshot?.isDragging ? 'shadow-lg scale-105' : 'hover:shadow-md'
-      } ${isDragging ? 'opacity-50' : ''}`}
+      className={`bg-white border-l-4 rounded-lg shadow-sm transition-all duration-200 ${getPriorityColor(story.priority)} hover:shadow-md ${isDragging ? 'opacity-50' : ''}`}
     >
       <div className="p-3">
         <div className="flex items-start justify-between mb-2">
@@ -477,12 +303,6 @@ const StoryCard = ({ story, onEdit, onDelete, isDragging, provided, snapshot }) 
             <span className="px-2 py-1 text-xs font-medium rounded bg-blue-100 text-blue-800">
               <Globe size={10} className="inline mr-1" />
               Published
-            </span>
-          )}
-          {story.createdFrom === 'ai-split' && (
-            <span className="px-2 py-1 text-xs font-medium rounded bg-purple-100 text-purple-800">
-              <Sparkles size={10} className="inline mr-1" />
-              AI Generated
             </span>
           )}
         </div>
@@ -632,7 +452,7 @@ const StoryMappingBoard = ({ stories, epics, onUpdateStory, onDeleteStory, onUpd
       </div>
 
       <div className="p-4 bg-white border-b border-gray-200">
-        <div className="flex gap-4 min-w-max">
+        <div className="flex gap-4 overflow-x-auto">
           {epics.map((epic) => (
             <div key={epic.id} className="min-w-[280px] flex-shrink-0">
               <EpicCard 
@@ -656,7 +476,7 @@ const StoryMappingBoard = ({ stories, epics, onUpdateStory, onDeleteStory, onUpd
       </div>
 
       <div className="flex-1 overflow-auto p-4">
-        <div className="flex gap-4 min-w-max h-full">
+        <div className="flex gap-4 min-w-max">
           {epics.map((epic) => (
             <div
               key={epic.id}
@@ -751,9 +571,35 @@ const StoryEditor = ({
   const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
-    setStory(currentStory || '');
-    setLastSavedVersion(currentStory || '');
-  }, [currentStory]);
+    const handleCollaborativeUpdate = (event) => {
+      const { changes, user } = event.detail;
+      if (user.id !== currentUser?.id) {
+        setStory(changes.content || story);
+        setLastSavedVersion(changes.content || story);
+        showCollaborativeUpdate(user, changes);
+      }
+    };
+
+    window.addEventListener('collaborative-story-update', handleCollaborativeUpdate);
+    return () => window.removeEventListener('collaborative-story-update', handleCollaborativeUpdate);
+  }, [story, currentUser]);
+
+  const showCollaborativeUpdate = (user, changes) => {
+    const notification = document.createElement('div');
+    notification.className = 'fixed top-4 right-4 bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 transition-all duration-300';
+    notification.innerHTML = `
+      <div class="flex items-center gap-2">
+        <span>${user.avatar}</span>
+        <span>${user.name} updated the story</span>
+      </div>
+    `;
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+      notification.style.opacity = '0';
+      setTimeout(() => document.body.removeChild(notification), 300);
+    }, 3000);
+  };
 
   const handleChange = (e) => {
     const newStory = e.target.value;
@@ -882,7 +728,7 @@ The AI agents will help you analyze, split, and improve this story according to 
   );
 };
 
-// AI Insights Panel Component - Updated with Phase 1 changes
+// AI Insights Panel Component
 const AIInsights = ({ 
   messages, 
   onSendMessage, 
@@ -890,18 +736,12 @@ const AIInsights = ({
   connectedUsers = [], 
   currentUser,
   currentStory,
-  currentStoryId,
   stories = [],
-  epics = [],
-  onStoriesCreated
+  epics = []
 }) => {
   const [activeAgent, setActiveAgent] = useState('analyze');
   const [loadingAgent, setLoadingAgent] = useState(null);
   const [error, setError] = useState(null);
-  const [showSplitAcceptance, setShowSplitAcceptance] = useState(false);
-  const [pendingSplits, setPendingSplits] = useState(null);
-  
-  const apiService = new APIService();
   
   const agents = [
     { id: 'analyze', name: 'Story Analyst', icon: Sparkles, color: 'blue' },
@@ -942,32 +782,6 @@ const AIInsights = ({
     }
   };
 
-  const handleAcceptSplits = async (selectedSplits) => {
-    try {
-      const result = await apiService.acceptSplitSuggestions(currentStoryId, selectedSplits);
-      
-      if (onStoriesCreated) {
-        onStoriesCreated(result.subStories);
-      }
-      
-      setShowSplitAcceptance(false);
-      setPendingSplits(null);
-      
-      const successMessage = {
-        id: `msg-${Date.now()}`,
-        timestamp: Date.now(),
-        agent: 'System',
-        content: `Successfully created ${result.subStories.length} sub-stories from the split suggestions.`,
-        type: 'success'
-      };
-      setMessages(prev => [...prev, successMessage]);
-      
-    } catch (error) {
-      console.error('Failed to accept splits:', error);
-      setError('Failed to create sub-stories. Please try again.');
-    }
-  };
-
   const renderMessage = (message) => {
     const agent = agents.find(a => a.name === message.agent) || agents[0];
     
@@ -998,21 +812,9 @@ const AIInsights = ({
           </div>
         )}
 
-        {message.splits && message.splits.length > 0 && (
+        {message.splits && (
           <div className="mb-3">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="font-medium text-gray-800">Recommended Splits:</h4>
-              <button
-                onClick={() => {
-                  setPendingSplits(message.splits);
-                  setShowSplitAcceptance(true);
-                }}
-                className="px-3 py-1 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1"
-              >
-                <CheckCircle size={14} />
-                Accept Splits
-              </button>
-            </div>
+            <h4 className="font-medium text-gray-800 mb-2">Recommended Splits:</h4>
             <div className="space-y-2">
               {message.splits.map((split, idx) => (
                 <div key={idx} className="p-3 bg-gray-50 rounded border">
@@ -1066,13 +868,6 @@ const AIInsights = ({
             )}
           </div>
         )}
-
-        {message.type === 'success' && (
-          <div className="flex items-center gap-2 text-green-600">
-            <CheckCircle size={16} />
-            <span className="text-sm font-medium">{message.content}</span>
-          </div>
-        )}
       </div>
     );
   };
@@ -1087,18 +882,14 @@ const AIInsights = ({
             className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs ${
               user.id === currentUser?.id 
                 ? 'bg-blue-100 text-blue-800 border border-blue-200' 
-                : user.isOnline 
-                  ? 'bg-green-100 text-green-800'
-                  : 'bg-gray-100 text-gray-600'
+                : 'bg-green-100 text-green-800'
             }`}
           >
             <span>{user.avatar}</span>
             <span className="font-medium">
               {user.id === currentUser?.id ? 'You' : user.name}
             </span>
-            <div className={`w-2 h-2 rounded-full ${
-              user.isOnline ? 'bg-green-500' : 'bg-gray-400'
-            }`} />
+            <div className={`w-2 h-2 rounded-full bg-green-500`} />
           </div>
         ))}
       </div>
@@ -1131,12 +922,12 @@ const AIInsights = ({
             <button
               key={agent.id}
               onClick={() => handleAgentAction(agent.id)}
-              disabled={loadingAgent === agent.id}
+              disabled={!isConnected || loadingAgent === agent.id}
               className={`p-3 rounded-lg border text-sm font-medium transition-all ${
                 activeAgent === agent.id
                   ? `bg-${agent.color}-50 border-${agent.color}-200 text-${agent.color}-700`
                   : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-              } ${loadingAgent === agent.id ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+              } ${!isConnected || loadingAgent === agent.id ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
               <div className="flex items-center gap-2">
                 {loadingAgent === agent.id ? (
@@ -1175,24 +966,74 @@ const AIInsights = ({
       </div>
 
       <ConnectedUsers users={connectedUsers} currentUser={currentUser} />
-
-      {showSplitAcceptance && pendingSplits && (
-        <SplitAcceptance
-          splits={pendingSplits}
-          parentStoryId={currentStoryId}
-          onAccept={handleAcceptSplits}
-          onCancel={() => {
-            setShowSplitAcceptance(false);
-            setPendingSplits(null);
-          }}
-        />
-      )}
     </div>
   );
 };
 
-// Header component - Updated with Phase 1 story selector
-const Header = ({ onExport, onImport, viewToggle, isConnected, currentStoryId, onStoryChange }) => {
+// Split Panel Layout Component
+const SplitPanel = ({ leftPanel, rightPanel, minLeftWidth = 300, minRightWidth = 300 }) => {
+  const [leftWidth, setLeftWidth] = useState(50);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleMouseDown = () => {
+    setIsDragging(true);
+  };
+
+  const handleMouseMove = useCallback((e) => {
+    if (!isDragging) return;
+    
+    const container = e.currentTarget.parentElement;
+    const rect = container.getBoundingClientRect();
+    const newLeftWidth = ((e.clientX - rect.left) / rect.width) * 100;
+    
+    const minLeftPercent = (minLeftWidth / rect.width) * 100;
+    const minRightPercent = (minRightWidth / rect.width) * 100;
+    
+    if (newLeftWidth >= minLeftPercent && newLeftWidth <= (100 - minRightPercent)) {
+      setLeftWidth(newLeftWidth);
+    }
+  }, [isDragging, minLeftWidth, minRightWidth]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  useEffect(() => {
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isDragging, handleMouseMove, handleMouseUp]);
+
+  return (
+    <div className="flex h-full">
+      <div style={{ width: `${leftWidth}%` }} className="min-w-0">
+        {leftPanel}
+      </div>
+      
+      <div 
+        className="w-1 bg-gray-300 cursor-col-resize hover:bg-gray-400 transition-colors flex-shrink-0"
+        onMouseDown={handleMouseDown}
+      />
+      
+      <div style={{ width: `${100 - leftWidth}%` }} className="min-w-0">
+        {rightPanel}
+      </div>
+    </div>
+  );
+};
+
+// Header component
+const Header = ({ onExport, onImport, viewToggle, isConnected }) => {
   return (
     <header className="bg-white border-b border-gray-200 px-6 py-4">
       <div className="flex items-center justify-between">
@@ -1214,10 +1055,6 @@ const Header = ({ onExport, onImport, viewToggle, isConnected, currentStoryId, o
         </div>
         
         <div className="flex items-center gap-4">
-          <StorySelector 
-            currentStoryId={currentStoryId}
-            onStoryChange={onStoryChange}
-          />
           {viewToggle}
           <div className="flex items-center gap-3">
             <button 
@@ -1242,90 +1079,105 @@ const Header = ({ onExport, onImport, viewToggle, isConnected, currentStoryId, o
 };
 
 // Main Application Component
-const App = () => {
-  const [currentStoryId, setCurrentStoryId] = useState('main-story');
+const StoryEditorApp = () => {
   const [currentStory, setCurrentStory] = useState('');
   const [publishedStory, setPublishedStory] = useState('');
   const [isPublishing, setIsPublishing] = useState(false);
   const [activeView, setActiveView] = useState('editor');
   const [messages, setMessages] = useState([]);
-  const [stories, setStories] = useState([]);
-  const [epics, setEpics] = useState([]);
-  const [loading, setLoading] = useState(true);
+  
+  const [stories, setStories] = useState([
+    {
+      id: '1',
+      title: 'User can log into the system',
+      description: 'Basic authentication functionality',
+      content: 'As a user, I can log into the system so that I can access my personal dashboard.',
+      epicId: 'epic1',
+      priority: 'High',
+      effort: 'Small',
+      storyPoints: 3,
+      acceptanceCriteria: ['Valid credentials allow access', 'Invalid credentials show error'],
+      status: 'published'
+    },
+    {
+      id: '2', 
+      title: 'User can view their profile',
+      description: 'Display user information and settings',
+      content: 'As a user, I can view my profile so that I can see my current information and settings.',
+      epicId: 'epic1',
+      priority: 'Medium',
+      effort: 'Medium',
+      storyPoints: 5,
+      acceptanceCriteria: ['Profile shows current information', 'Settings are editable'],
+      status: 'draft'
+    },
+    {
+      id: '3',
+      title: 'User can search for products',
+      description: 'Product search with filters',
+      content: 'As a customer, I can search for products so that I can find items I want to purchase.',
+      epicId: 'epic2',
+      priority: 'High',
+      effort: 'Large',
+      storyPoints: 8,
+      acceptanceCriteria: ['Search returns relevant results', 'Filters work correctly'],
+      status: 'draft'
+    }
+  ]);
+
+  const [epics, setEpics] = useState([
+    {
+      id: 'epic1',
+      title: 'User Management',
+      description: 'All user-related functionality',
+      order: 1
+    },
+    {
+      id: 'epic2', 
+      title: 'Product Discovery',
+      description: 'Search and browse products',
+      order: 2
+    }
+  ]);
 
   const apiService = new APIService();
-
-  // Pusher collaboration
-  const { isConnected, members } = usePusherCollaboration('main', {
-    onMemberAdded: (member) => console.log('Member added:', member),
-    onMemberRemoved: (member) => console.log('Member removed:', member)
-  });
-
-  // Load initial data
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  // Load story content when currentStoryId changes
-  useEffect(() => {
-    if (currentStoryId) {
-      loadStoryContent(currentStoryId);
-    }
-  }, [currentStoryId]);
-
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const [storiesData, epicsData] = await Promise.all([
-        apiService.getStories(),
-        apiService.getAllEpics()
-      ]);
-      setStories(storiesData);
-      setEpics(epicsData);
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadStoryContent = async (storyId) => {
-    try {
-      const story = await apiService.getStory(storyId);
-      setCurrentStory(story.content || '');
-      if (story.status === 'published') {
-        setPublishedStory(story.content || '');
-      }
-    } catch (error) {
-      console.error('Failed to load story:', error);
-    }
-  };
+  
+  const { 
+    sendStoryUpdate,
+    sendTypingIndicator,
+    isConnected, 
+    connectedUsers,
+    currentUser,
+    typingUsers
+  } = usePusherCollaboration('story-collaboration');
 
   const handleStoryChange = useCallback((newStory) => {
     setCurrentStory(newStory);
-    // Auto-save to server
-    if (currentStoryId) {
-      apiService.updateStory(currentStoryId, { content: newStory })
-        .catch(error => console.error('Failed to save story:', error));
-    }
-  }, [currentStoryId]);
+    sendStoryUpdate('main-story', { content: newStory });
+  }, [sendStoryUpdate]);
 
   const handlePublish = async () => {
-    if (!currentStory.trim() || !currentStoryId) return;
+    if (!currentStory.trim()) return;
     
     setIsPublishing(true);
     try {
-      await apiService.publishStory(currentStoryId);
+      const result = await apiService.publishStory('main-story');
       setPublishedStory(currentStory);
       
-      // Update stories list
+      // Update the main story in stories array if it exists
+      const mainStoryId = '1'; // This would be dynamic
       setStories(prev => prev.map(story => 
-        story.id === currentStoryId 
+        story.id === mainStoryId 
           ? { ...story, content: currentStory, status: 'published' }
           : story
       ));
+      
+      // Notify other users
+      sendStoryUpdate('main-story', { content: currentStory, status: 'published' });
+      
     } catch (error) {
       console.error('Publish failed:', error);
+      alert('Failed to publish story: ' + error.message);
     } finally {
       setIsPublishing(false);
     }
@@ -1336,56 +1188,43 @@ const App = () => {
       const response = await apiService.callAgent(agentType, storyData);
       
       const message = {
-        id: response.id,
-        timestamp: response.created,
-        agent: response.metadata.agent,
-        content: response.choices[0].message.content,
-        ...response.metadata
+        id: response.id || 'msg-' + Date.now(),
+        timestamp: response.created || Date.now(),
+        agent: response.metadata?.agent || {
+          analyze: 'Story Analyst',
+          split: 'Splitting Expert', 
+          coach: 'Coaching Assistant',
+          review: 'Quality Reviewer'
+        }[agentType],
+        content: response.choices?.[0]?.message?.content || 'No response',
+        suggestions: response.metadata?.suggestions,
+        splits: response.metadata?.splits,
+        tips: response.metadata?.tips,
+        criteria: response.metadata?.criteria,
+        score: response.metadata?.score
       };
-      
-      setMessages(prev => [...prev, message]);
-    } catch (error) {
-      const agentName = {
-        analyze: 'Story Analyst',
-        split: 'Splitting Expert',
-        coach: 'Coaching Assistant',
-        review: 'Quality Reviewer'
-      }[agentType] || agentType;
-      
-      throw new Error(`AI Agent (${agentName}) temporarily unavailable. Please try again later.`);
-    }
-  };
 
-  const handleStoriesCreated = (newStories) => {
-    // Refresh stories list
-    loadData();
-    // Show success notification
-    console.log('Created sub-stories:', newStories);
+      setMessages(prev => [...prev, message]);
+      
+    } catch (error) {
+      throw error;
+    }
   };
 
   // Story management functions
-  const handleUpdateStory = async (storyId, updatedStory) => {
-    try {
-      await apiService.updateStory(storyId, updatedStory);
-      setStories(prev => prev.map(story => 
-        story.id === storyId ? updatedStory : story
-      ));
-    } catch (error) {
-      console.error('Failed to update story:', error);
-    }
+  const handleUpdateStory = (storyId, updatedStory) => {
+    setStories(prev => prev.map(story => 
+      story.id === storyId ? updatedStory : story
+    ));
   };
 
-  const handleDeleteStory = async (storyId) => {
-    try {
-      await apiService.deleteStory(storyId);
-      setStories(prev => prev.filter(story => story.id !== storyId));
-    } catch (error) {
-      console.error('Failed to delete story:', error);
-    }
+  const handleDeleteStory = (storyId) => {
+    setStories(prev => prev.filter(story => story.id !== storyId));
   };
 
-  const handleAddStory = async (epicId) => {
+  const handleAddStory = (epicId) => {
     const newStory = {
+      id: `story-${Date.now()}`,
       title: 'New User Story',
       description: '',
       content: 'As a user, I can [action] so that [benefit].',
@@ -1396,57 +1235,35 @@ const App = () => {
       acceptanceCriteria: [],
       status: 'draft'
     };
-    
-    try {
-      const created = await apiService.createStory(newStory);
-      setStories(prev => [...prev, created]);
-    } catch (error) {
-      console.error('Failed to create story:', error);
-    }
+    setStories(prev => [...prev, newStory]);
   };
 
   // Epic management functions
-  const handleUpdateEpic = async (epicId, updatedEpic) => {
-    try {
-      await apiService.updateEpic(epicId, updatedEpic);
-      setEpics(prev => prev.map(epic =>
-        epic.id === epicId ? updatedEpic : epic
-      ));
-    } catch (error) {
-      console.error('Failed to update epic:', error);
-    }
+  const handleUpdateEpic = (epicId, updatedEpic) => {
+    setEpics(prev => prev.map(epic =>
+      epic.id === epicId ? updatedEpic : epic
+    ));
   };
 
-  const handleDeleteEpic = async (epicId) => {
-    try {
-      await apiService.deleteEpic(epicId);
-      setEpics(prev => prev.filter(epic => epic.id !== epicId));
-      setStories(prev => prev.map(story =>
-        story.epicId === epicId ? { ...story, epicId: null } : story
-      ));
-    } catch (error) {
-      console.error('Failed to delete epic:', error);
-    }
+  const handleDeleteEpic = (epicId) => {
+    setEpics(prev => prev.filter(epic => epic.id !== epicId));
+    setStories(prev => prev.map(story =>
+      story.epicId === epicId ? { ...story, epicId: null } : story
+    ));
   };
 
-  const handleAddEpic = async () => {
+  const handleAddEpic = () => {
     const newEpic = {
+      id: `epic-${Date.now()}`,
       title: 'New Epic',
       description: 'Epic description',
       order: epics.length + 1
     };
-    
-    try {
-      const created = await apiService.createEpic(newEpic);
-      setEpics(prev => [...prev, created]);
-    } catch (error) {
-      console.error('Failed to create epic:', error);
-    }
+    setEpics(prev => [...prev, newEpic]);
   };
 
   const handleExport = () => {
     const data = {
-      currentStoryId,
       currentStory,
       publishedStory,
       stories,
@@ -1480,7 +1297,6 @@ const App = () => {
             if (data.stories) setStories(data.stories);
             if (data.epics) setEpics(data.epics);
             if (data.insights) setMessages(data.insights);
-            if (data.currentStoryId) setCurrentStoryId(data.currentStoryId);
           } catch (error) {
             alert('Invalid file format');
           }
@@ -1512,19 +1328,11 @@ const App = () => {
             : 'text-gray-600 hover:text-gray-900'
         }`}
       >
-        <Grid3X3 size={14} />
+        <LayoutGrid size={14} />
         Board
       </button>
     </div>
   );
-
-  if (loading) {
-    return (
-      <div className="h-screen flex items-center justify-center">
-        <Loader2 size={48} className="animate-spin text-blue-600" />
-      </div>
-    );
-  }
 
   return (
     <StoryContext.Provider value={{ currentStory, publishedStory, messages, stories, epics }}>
@@ -1534,41 +1342,37 @@ const App = () => {
           onImport={handleImport}
           viewToggle={<ViewToggle />}
           isConnected={isConnected}
-          currentStoryId={currentStoryId}
-          onStoryChange={setCurrentStoryId}
         />
         
-        <main className="flex-1 min-h-0 flex">
+        <main className="flex-1 min-h-0">
           {activeView === 'editor' ? (
-            <>
-              <div className="flex-1 flex flex-col">
+            <SplitPanel
+              leftPanel={
                 <StoryEditor 
                   onStoryChange={handleStoryChange} 
                   currentStory={currentStory}
                   publishedStory={publishedStory}
                   onPublish={handlePublish}
-                  connectedUsers={members}
-                  currentUser={members.find(m => m.id === 'current-user')}
-                  typingUsers={new Set()}
-                  sendTypingIndicator={() => {}}
+                  connectedUsers={connectedUsers}
+                  currentUser={currentUser}
+                  typingUsers={typingUsers}
+                  sendTypingIndicator={sendTypingIndicator}
                   isPublishing={isPublishing}
                 />
-              </div>
-              <div className="w-96 border-l border-gray-200">
+              }
+              rightPanel={
                 <AIInsights 
                   messages={messages}
                   onSendMessage={handleSendMessage}
                   isConnected={isConnected}
-                  connectedUsers={members}
-                  currentUser={members.find(m => m.id === 'current-user')}
+                  connectedUsers={connectedUsers}
+                  currentUser={currentUser}
                   currentStory={currentStory}
-                  currentStoryId={currentStoryId}
                   stories={stories}
                   epics={epics}
-                  onStoriesCreated={handleStoriesCreated}
                 />
-              </div>
-            </>
+              }
+            />
           ) : (
             <StoryMappingBoard
               stories={stories}
@@ -1587,4 +1391,4 @@ const App = () => {
   );
 };
 
-export default App;
+export default StoryEditorApp;
